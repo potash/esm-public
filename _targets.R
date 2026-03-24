@@ -38,13 +38,7 @@ truth_targets = tar_map(
                select(location_id, Mineral_cumsum)),
   tar_target(truth,
              measurements %>%
-               filter(sample_depth_max %in% c(depths))),
-  tar_target(truth_mean,
-             truth %>% 
-               group_by(sample_depth_max) %>%
-               summarize(SOCd_mean = mean(SOCd),
-                         SOCd_cumsum_mean = mean(SOCd_cumsum))
-  )
+               filter(sample_depth_max %in% c(depths)))
 )
 
 # "old" interpolation models (splines and linear)
@@ -141,35 +135,10 @@ old_targets = tar_map(
 
 
 list(
-  # the BR, MC, DG, PT datasets come from my previous Geoderma paper
-  tar_target(measurements_path, "data/measurements.csv", format="file"),
-  tar_target(locations_path, "data/locations.csv", format="file"),
-
-  tar_map(
-    tibble(site=c("ILB", "Douglas", "Piatt", "Macon"),
-           code=c("BR", "DG", "PT", "MC"),
-           crs=c(32615, 32616, 32616, 32616)
-           ),
-    names = site,
-    tar_target(measurements, 
-               read_csv(measurements_path) %>% 
-                 filter(get("site")==paste0("IL-", code)) %>%
-                 select(-"site") %>%
-                 filter_complete_profiles %>%
-                 add_ESM_columns),
-    tar_target(locations, 
-               read_csv(locations_path) %>% 
-                 filter(get("site")==paste0("IL-", code)) %>%
-                 select(-"site") %>%
-                 st_as_sf(coords=c("X","Y"), crs=4326) %>%
-                 st_transform(crs))
-  ),
   tar_target(resample_soils,
              get_resample_soils()),
   tar_target(resample_labs,
              get_resample_labs()),
-  tar_target(locations_resample,
-             get_resample_locations()),
   tar_target(measurements_resample,
              get_resample_measurements(resample_labs, resample_soils)
              ),
@@ -181,10 +150,8 @@ list(
                        group_by(location_id) %>%
                        #filter(n() == 7) %>%
                        ungroup %>%
-                       add_ESM_columns),
-          tar_target(locations,
-                     locations_resample %>%
-                       filter(str_starts(location_id, site)))),
+                       add_ESM_columns)
+          ),
   
   tar_map(
     data_values %>% filter(type=="train"),
@@ -196,13 +163,7 @@ list(
                  train %>% 
                    add_noise2(0.04, 0.02) %>% 
                    mutate(.sim = i)) %>%
-                 do.call(bind_rows, .)),
-    tar_target(train_noise2,
-                lapply(1:N_SIM, function(i) 
-                  train %>% 
-                    add_noise2(0.1, 0.05) %>% 
-                    mutate(.sim = i)) %>%
-                  do.call(bind_rows, .))
+                 do.call(bind_rows, .))
   ),
   
   tar_map(
@@ -216,21 +177,12 @@ list(
                                 rep_first_bottom %>% 
                                 mutate(.sim = i)) %>%
                          do.call(bind_rows, .)
-    ),
-    tar_target(train_comp_noise2,
-               lapply(1:N_SIM, function(i) train_comp %>%
-                        add_noise2(0.1, 0.05) %>%
-                        rep_first_bottom %>%
-                        mutate(.sim = i)) %>%
-                 do.call(bind_rows, .)
     )
   ),
   
   tar_map(
-    data_values %>% filter(type=="train", depths_name %in% c("30", "30_60")),
+    data_values %>% filter(type=="train", depths_name %in% c("30_60")),
     names=c(site, depths_name),
-    tar_target(train_compAll,
-               get_train(measurements, depths) %>% pool_all),
     tar_target(train_compAll_noise,
                lapply(1:N_SIM, function(i) get_train(measurements, depths) %>%
                         add_noise2(0.04, 0.02) %>%
@@ -257,11 +209,6 @@ list(
   tar_combine(
     truth_combined,
     c(truth_targets$truth),
-    command=bind_rows_with_name(!!!.x)
-  ),
-  tar_combine(
-    truth_mean_combined,
-    c(truth_targets$truth_mean),
     command=bind_rows_with_name(!!!.x)
   )
 )
