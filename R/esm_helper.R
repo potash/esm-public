@@ -1,11 +1,14 @@
-# # make sure that there are no missing sections
-# filter_complete_profiles = function(df) {
-#   df %>%
-#     group_by(location_id) %>%
-#     mutate(adjacent=sample_depth_min == lag(sample_depth_max, default=0)) %>%
-#     filter(cumprod(adjacent) == 1)
-# }
-# 
+bind_rows_with_name = function(..., .names_to="name") {
+  args = list(...)
+  dots = match.call(expand.dots = FALSE)$...
+  names = sapply(dots, deparse)
+  for(i in 1:length(args)) {
+    args[[i]][.names_to] = names[[i]]
+  }
+  df = bind_rows(args)
+  df
+}
+
 # Add SOCd, SOCd_cumsum, Mineral, Mineral_cumsum, and (0,0) row
 add_ESM_columns = function(df) {
   df %>%
@@ -22,24 +25,14 @@ add_ESM_columns = function(df) {
                      SOCd_cumsum=0)) %>%
     arrange(location_id, sample_depth_max)
 }
-# 
-# # if you filter out some rows, then the SOCd and Mineral rows are wrong, so this fixes them
-# update_ESM_columns = function(df) {
-#   df %>%
-#     group_by(location_id) %>%
-#     arrange(location_id, sample_depth_max) %>%
-#     mutate(SOCd = SOCd_cumsum - lag(SOCd_cumsum, default=0),
-#            Mineral = Mineral_cumsum - lag(Mineral_cumsum, default=0)) %>%
-#     ungroup
-# }
-# 
+
 # for making predictions using old ESM adjustment methods
 predict_fun = function(nested_fits, test) {
   nested_fits %>%
-    inner_join(test) %>%
+    inner_join(test, relationship="many-to-many") %>%
     mutate(SOCd_cumsum_predict = fit(Mineral_cumsum)) %>%
     select(Mineral_cumsum, SOCd_cumsum_predict) %>%
-    unnest()
+    unnest(c())
 }
 
 # given a grouped, sorted df with Mineral_cumsum, SOCd_cumsum_predict
@@ -151,7 +144,7 @@ add_SOCc_BD_to_ESM = function(ESM) {
     select(-Mineral) %>%
     ungroup
 }
-# 
+
 # pool all measurements like secondary data analysis
 # first average BD and SOCc
 # then calculate mineral cumsum
@@ -206,17 +199,13 @@ get_validation_combined = function(predict_old_combined, truth_combined) {
                  mutate(test=str_replace(name, "truth", "test")) %>%
                  select(-name)) %>%
     ungroup %>%
-    filter(!grepl("minimax", train)) %>%
     extract(train, into=c("site", "train_depths"), regex="([A-Za-z]+)_([_0-9]+)$", remove =FALSE) %>%
     mutate(test_depths = str_extract(test, "[0-9_\\.]+$") %>% str_sub(2)) %>%
     mutate(n_depths = 1 + str_count(train_depths, "_"), .after="train_depths") %>%
-    filter(site != "Alma") %>%
     # ignore fixed depth with correction layer
     filter(name != "fixed" | n_depths == 1) %>%
     # hyman only makes sense with correction layer
     filter(name != "hyman" | n_depths > 1) %>%
-    filter(name != "linear") %>%
-    #filter(name != "fixed" | sample_depth_max == 30) %>%
     mutate(error_cumsum=SOCd_cumsum_predict - SOCd_cumsum,
            error = SOCd_predict - SOCd
     )

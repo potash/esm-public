@@ -112,8 +112,7 @@ validation_combined_scenario = scenarios %>%
   sample_n(1, weight=weight) %>%
   select(-weight) %>%
   inner_join(validation_combined %>%
-               mutate(noise=1*grepl("noise_", train) +
-               2*grepl("noise2_", train)) %>%
+               mutate(noise=1*grepl("noise_", train)) %>%
   mutate(comp=ifelse(grepl("comp_", train), "bottom",
                      ifelse(grepl("compAll_", train), "all", "none")) ) %>%
                mutate(target_depth = ifelse(grepl("30", test), 30, 60)) %>%
