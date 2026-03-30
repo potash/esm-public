@@ -104,7 +104,8 @@ scenarios = bind_rows(
 ```
 
 ```{r}
-tar_load(validation_combined)
+tar_load(validation_long_combined)
+validation_combined = validation_long_combined
 
 validation_combined_scenario = scenarios %>%
   expand_grid(.sim = 1:100, core_id=1:12) %>%

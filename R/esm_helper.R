@@ -64,6 +64,20 @@ fixedfun = function(x, y) {
   myfunc
 }
 
+fit_hyman = function(data) {
+  splinefun(data$Mineral_cumsum, data$SOCd_cumsum, method="hyman")
+}
+
+fit_fixed = function(data) {
+  data = data %>% filter(Mineral_cumsum > 0)
+  fixedfun(data$Mineral_cumsum, data$SOCd_cumsum)
+}
+
+fit_linear2 = function(data) {
+  approxExtrapFun(tail(data$Mineral_cumsum,2), 
+                  tail(data$SOCd_cumsum, 2))
+}
+
 get_train = function(measurements, depths) {
   if(!"n_obs" %in% measurements) {
     measurements$n_obs = 1

@@ -24,7 +24,7 @@ data_values <- bind_rows(
 ) %>% 
   rowwise() %>%
   mutate(depths_name = paste0(depths, collapse="_")) %>%
-  mutate(measurements = c(rlang::sym(paste0("measurements_", site))))
+  mutate(measurements = c(sym(paste0("measurements_", site))))
 
 truth_targets = tar_map(
   data_values %>% filter(type=="test"),
@@ -96,18 +96,14 @@ predict_values <- bind_rows(
                   expand_grid(
                     train_depths = c("60", "30_60"),
                     test_depths = "45_55_57.5_60_62.5_65_75")
-                  )) %>%
-    transmute(train_name = sprintf(train_name, noise, site, train_depths),
-              test_name = sprintf(test_name, site, test_depths)),
+                  )),
   
   tibble(site=SITES) %>%
     mutate(train_name="train_comp_%s%s_%s",
            test_name="test_%s_%s") %>%
     expand_grid(noise = "noise_",
                 train_depths = c("30_35"),
-                test_depths = "15_25_27.5_30_32.5_35_45") %>%
-    transmute(train_name = sprintf(train_name, noise, site, train_depths),
-              test_name = sprintf(test_name, site, test_depths)),
+                test_depths = "15_25_27.5_30_32.5_35_45"),
   
   tibble(site=SITES) %>%
     mutate(train_name="train_compAll_%s%s_%s",
@@ -115,61 +111,46 @@ predict_values <- bind_rows(
     expand_grid(noise = "noise_",
                 train_depths = c("30_60"),
                 test_depths = c("15_25_27.5_30_32.5_35_45",
-                                "45_55_57.5_60_62.5_65_75") ) %>%
-    transmute(train_name = sprintf(train_name, noise, site, train_depths),
-              test_name = sprintf(test_name, site, test_depths)),
+                                "45_55_57.5_60_62.5_65_75") ),
   ) %>%
-  mutate(train=rlang::syms(train_name),
-         test=rlang::syms(test_name),
-         truth=rlang::syms(str_replace(test_name, "test", "truth")))
+  transmute(train_name = sprintf(train_name, noise, site, train_depths),
+            test_name = sprintf(test_name, site, test_depths),
+            train_n_depths = str_count(train_depths, "_") + 1) %>%
+  mutate(train=syms(train_name),
+         test=syms(test_name),
+         truth=syms(str_replace(test_name, "test", "truth")))
 
-predict_targets = tar_map(
-  values=predict_values,
-  names=c(train, test),
+predict_long_values = predict_values %>% 
+   expand_grid(tibble(
+     method = c("linear2", "hyman", "fixed"),
+     min_train_depths = c(1, 2, 1),
+     max_train_depths = c(Inf, Inf, 1))) %>%
+   filter(train_n_depths >= min_train_depths,
+          train_n_depths <= max_train_depths) %>%
+  mutate(fit_function = syms(str_glue("fit_{method}")))
+
+predict_long_targets = tar_map(
+  values=predict_long_values,
+  names=c(method, train, test),
   
-  # hyman
-  tar_target(fit_hyman,
+  tar_target(fit_long,
              train %>% 
                ensure_sim %>%
                nest_by(location_id, .sim) %>%
-               mutate(fit=list(splinefun(data$Mineral_cumsum, data$SOCd_cumsum, method="hyman")))
+               mutate(fit=list(fit_function(data)))
   ),
-  tar_target(predict_hyman,
-             predict_fun(fit_hyman, test)),
-
-  # linear but always use bottom layer
-  tar_target(fit_linear2,
-             train %>% 
-               ensure_sim %>%
-               nest_by(location_id, .sim) %>%
-               mutate(fit=list(approxExtrapFun(tail(data$Mineral_cumsum,2), 
-                                               tail(data$SOCd_cumsum, 2)
-                                         )))),
-  tar_target(predict_linear2,
-             predict_fun(fit_linear2, test)),
-  # fixed depth
-  tar_target(fit_fixed,
-            train %>%
-                ensure_sim %>%
-                filter(Mineral_cumsum > 0) %>% # fixed takes nearest value but never want zero
-                nest_by(location_id, .sim) %>%
-                mutate(fit=list(fixedfun(data$Mineral_cumsum, data$SOCd_cumsum)))),
-  tar_target(predict_fixed,
-             predict_fun(fit_fixed, test)),
-  tar_target(predict,
-             bind_rows(`hyman`=predict_hyman,
-                       `linear2`=predict_linear2,
-                       `fixed`=predict_fixed,
-                       .id="name") %>%
-               mutate(train=train_name, test=test_name) %>%
-               group_by(name, location_id) %>%
+  tar_target(predict_long,
+             predict_fun(fit_long, test)),
+  
+  # add provenance and marginal SOC predictions
+  tar_target(predict_long_extra,
+             predict_long%>%
+               mutate(name=method, train=train_name, test=test_name) %>%
+               group_by(location_id) %>%
                arrange(Mineral_cumsum) %>%
                # add marginal SOC prediction
-               compute_marginal_pred
-  )
+               compute_marginal_pred)
 )
-
-
 
 list(
   tar_target(measurements_file,
@@ -189,11 +170,11 @@ list(
   train_targets,
   truth_targets,
   
-  predict_targets,
+  predict_long_targets,
   
   tar_combine(
-    predict_combined,
-    predict_targets$predict,
+    predict_long_combined,
+    predict_long_targets$predict_long_extra,
     command=bind_rows(!!!.x)
   ),
   
@@ -203,8 +184,8 @@ list(
     command=bind_rows_with_name(!!!.x)
   ),
   
-  tar_target(validation_combined,
-             get_validation_combined(predict_combined,
+  tar_target(validation_long_combined,
+             get_validation_combined(predict_long_combined,
                                      truth_combined)
   )
 )
