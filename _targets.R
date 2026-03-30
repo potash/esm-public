@@ -9,19 +9,20 @@ tar_option_set(
   controller = crew_controller_local(workers = 8)
 )
 
-N_SIM = 100
+N_SIM = 200
 SITES = c("Boon", "Craw", "Sali", "Merc", "Chri", "Ogle")
 
 tar_option_set(packages = c("tidyverse"))
 
 data_values <- bind_rows(
-  expand_grid(type="train", site=SITES, depths=list(c(30, 35))),
-  expand_grid(type="train", site=SITES, depths=list(c(30, 60))),
-  expand_grid(type="train", site=SITES, depths=list(c(30))),
-  expand_grid(type="train", site=SITES, depths=list(c(60))),
-  expand_grid(type="test", site=SITES, depths=list(c(15,25,27.5,30,32.5,35,45))),
-  expand_grid(type="test", site=SITES, depths=list(30+c(15,25,27.5,30,32.5,35,45))),
+  tibble_row(type="train", depths=list(c(30, 35))),
+  tibble_row(type="train", depths=list(c(30, 60))),
+  tibble_row(type="train", depths=list(c(30))),
+  tibble_row(type="train", depths=list(c(60))),
+  tibble_row(type="test", depths=list(c(15,25,27.5,30,32.5,35,45))),
+  tibble_row(type="test", depths=list(30+c(15,25,27.5,30,32.5,35,45))),
 ) %>% 
+  expand_grid(site=SITES) %>%
   rowwise() %>%
   mutate(depths_name = paste0(depths, collapse="_")) %>%
   mutate(measurements = c(sym(paste0("measurements_", site))))
@@ -120,7 +121,7 @@ predict_values <- bind_rows(
          test=syms(test_name),
          truth=syms(str_replace(test_name, "test", "truth")))
 
-predict_long_values = predict_values %>% 
+predict_values = predict_values %>% 
    expand_grid(tibble(
      method = c("linear2", "hyman", "fixed"),
      min_train_depths = c(1, 2, 1),
@@ -129,13 +130,12 @@ predict_long_values = predict_values %>%
           train_n_depths <= max_train_depths) %>%
   mutate(fit_function = syms(str_glue("fit_{method}")))
 
-predict_long_targets = tar_map(
-  values=predict_long_values,
+predict_targets = tar_map(
+  values=predict_values,
   names=c(method, train, test),
   
   tar_target(fit_long,
              train %>% 
-               ensure_sim %>%
                nest_by(location_id, .sim) %>%
                mutate(fit=list(fit_function(data)))
   ),
@@ -143,7 +143,7 @@ predict_long_targets = tar_map(
              predict_fun(fit_long, test)),
   
   # add provenance and marginal SOC predictions
-  tar_target(predict_long_extra,
+  tar_target(predict_extra,
              predict_long%>%
                mutate(name=method, train=train_name, test=test_name) %>%
                group_by(location_id) %>%
@@ -170,11 +170,11 @@ list(
   train_targets,
   truth_targets,
   
-  predict_long_targets,
+  predict_targets,
   
   tar_combine(
-    predict_long_combined,
-    predict_long_targets$predict_long_extra,
+    predict_combined,
+    predict_targets$predict_extra,
     command=bind_rows(!!!.x)
   ),
   
@@ -184,8 +184,8 @@ list(
     command=bind_rows_with_name(!!!.x)
   ),
   
-  tar_target(validation_long_combined,
-             get_validation_combined(predict_long_combined,
+  tar_target(validation_combined,
+             get_validation_combined(predict_combined,
                                      truth_combined)
   )
 )

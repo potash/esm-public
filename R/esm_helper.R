@@ -196,30 +196,15 @@ pool_bottom = function(train) {
     mutate(SOCd_cumsum=cumsum(coalesce(SOCd, 0))) %>%
     ungroup
 }
-# 
-# if no .sim column make it equal to 1
-ensure_sim = function(df) {
-  if(!".sim" %in% colnames(df)) {
-    df$.sim = 1
-  }
 
-  df
-}
-# 
 get_validation_combined = function(predict_old_combined, truth_combined) {
   predict_old_combined %>%
-    #bind_rows(tar_read(predict_gp_summary_combined)) %>%
     inner_join(truth_combined %>%
                  mutate(test=str_replace(name, "truth", "test")) %>%
                  select(-name)) %>%
     ungroup %>%
     extract(train, into=c("site", "train_depths"), regex="([A-Za-z]+)_([_0-9]+)$", remove =FALSE) %>%
     mutate(test_depths = str_extract(test, "[0-9_\\.]+$") %>% str_sub(2)) %>%
-    mutate(n_depths = 1 + str_count(train_depths, "_"), .after="train_depths") %>%
-    # ignore fixed depth with correction layer
-    filter(name != "fixed" | n_depths == 1) %>%
-    # hyman only makes sense with correction layer
-    filter(name != "hyman" | n_depths > 1) %>%
     mutate(error_cumsum=SOCd_cumsum_predict - SOCd_cumsum,
            error = SOCd_predict - SOCd
     )
