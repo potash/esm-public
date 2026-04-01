@@ -197,8 +197,8 @@ pool_bottom = function(train) {
     ungroup
 }
 
-get_validation_combined = function(predict_old_combined, truth_combined) {
-  predict_old_combined %>%
+get_validation_combined = function(predict_combined, truth_combined) {
+  predict_combined %>%
     inner_join(truth_combined %>%
                  mutate(test=str_replace(name, "truth", "test")) %>%
                  select(-name)) %>%
@@ -208,4 +208,39 @@ get_validation_combined = function(predict_old_combined, truth_combined) {
     mutate(error_cumsum=SOCd_cumsum_predict - SOCd_cumsum,
            error = SOCd_predict - SOCd
     )
+}
+
+discretize_bd_dist = function(slices, mean, sd_log) {
+  targets = c(slices$sample_depth_max)
+  mids = (targets[-1] + targets[-length(targets)]) / 2
+  bounds = c(0, mids, Inf)
+  probs = diff(plnorm(bounds, mean = log(mean) - sd_log^2/2, sd = sd_log))
+  tibble(depth=targets, weight=probs)
+}
+ 
+get_scenarios = function() {
+  slices = tibble(sample_depth_max = c(15,25,27.5,30,32.5,35,45,55,57.5,60,62.5,65,75)) %>%
+    mutate(sample_depth_min = lag(sample_depth_max, default=0)) %>%
+    mutate(xmin = (sample_depth_max + sample_depth_min)/2,
+           xmax = coalesce(lead(xmin), 80))
+  
+ scenarios0 = expand_grid(tibble(
+    scenario=c("Compact", "Expand", "More Compact", "More Expand"), 
+    dd = c(-2.5, +2.5, -5, +5) ),
+    tibble(target_depth=c(30, 60), sd_log = c(.075, .075)))
+  
+  scenarios = scenarios0 %>%
+    nest_by(scenario, target_depth) %>%
+    mutate(bd_dist = list(discretize_bd_dist(slices, mean=target_depth+data$dd, data$sd_log))) %>% 
+    unnest() %>%
+    transmute(scenario, target_depth, sample_depth_max=depth, weight)
+  
+  # when compositing all, just put all weight on the mean change??
+  scenarios_compAll = scenarios0 %>% 
+    transmute(scenario, target_depth, sample_depth_max=target_depth+dd, weight=1) 
+  
+  bind_rows(
+    scenarios %>% expand_grid(comp=c("none", "bottom")),
+    scenarios_compAll %>% mutate(comp="all")
+  )
 }

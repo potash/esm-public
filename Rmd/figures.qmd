@@ -11,7 +11,7 @@ library(targets)
 library(patchwork)
 
 source("../R/esm_helper.R")
-knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE, cache=TRUE, autodep = TRUE)
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
 theme_set(theme_bw())
 targets::tar_config_set(store = "../_targets")
 ```
@@ -58,76 +58,43 @@ make_raw_data_plots = function(df, title=NULL) {
 
 ## SOC stock
 
-```{r}
-raw_data %>%
+```{r fig_raw_data, fig.width=8, fig.height=5}
+raw_data_plot = raw_data %>%
   mutate(y=SOCd3, x_max=sample_depth_max, x_min=sample_depth_min) %>%
   make_raw_data_plots(title="(a) Location")  &
     xlab("Soil depth (cm)") &
     ylab("SOC density (g cm<sup>-3</sup>)")
+
+soil_summary_plot = raw_data %>%
+  ggplot(aes( (sample_depth_max + sample_depth_min)/2 , SOCd3, color=`Soil order`)) +
+  geom_smooth() +
+  ylab("SOC stock (g cm<sup>-3</sup>)") +
+  xlab("Soil depth (cm)") +
+  theme(axis.title.y = ggtext::element_markdown()) +
+  coord_cartesian(expand=FALSE)
+
+raw_data_plot + 
+  soil_summary_plot + ggtitle("(b) Soil order" ) + theme(legend.position="right") +
+  plot_layout(axes="collect", 
+              guides="collect",
+              design="AAACC\nBBBCC") &
+  theme(legend.position="bottom")
 ```
 
 # BD change distributions
 
-```{r, fig.height=3.5}
-slices = tibble(sample_depth_max = c(15,25,27.5,30,32.5,35,45,55,57.5,60,62.5,65,75)) %>%
-  mutate(sample_depth_min = lag(sample_depth_max, default=0)) %>%
-  mutate(xmin = (sample_depth_max + sample_depth_min)/2,
-         xmax = coalesce(lead(xmin), 80))
-
-discretize_bd_dist = function(mean, sd_log) {
-  targets = c(slices$sample_depth_max)
-  mids = (targets[-1] + targets[-length(targets)]) / 2
-  bounds = c(0, mids, Inf)
-  probs = diff(plnorm(bounds, mean = log(mean) - sd_log^2/2, sd = sd_log))
-  tibble(depth=targets, weight=probs)
-}
-
-scenarios0 = expand_grid(tibble(
-  scenario=c("Less Compact", "Less Expand", "Compact", "Expand", "More Compact", "More Expand"), 
-  dd = c(-1, +1, -2.5, +2.5, -5, +5) ),
-  tibble(target_depth=c(30, 60), sd_log = c(.075, .075)))
-
-scenarios = scenarios0 %>%
-  nest_by(scenario, target_depth) %>%
-  mutate(bd_dist = list(discretize_bd_dist(mean=target_depth+data$dd, data$sd_log))) %>% 
-  unnest() %>%
-  transmute(scenario, target_depth, sample_depth_max=depth, weight)
-
-# when compositing all, just put all weight on the mean change??
-scenarios_compAll = scenarios0 %>% 
-  transmute(scenario, target_depth, sample_depth_max=target_depth+dd, weight=1) 
-
-scenarios = bind_rows(
-  scenarios %>% expand_grid(comp=c("none", "bottom")),
-  scenarios_compAll %>% mutate(comp="all")
-)
-```
-
 ```{r}
-tar_load(validation_long_combined)
-validation_combined = validation_long_combined
+tar_load(validation_combined_scenario)
 
-validation_combined_scenario = scenarios %>%
-  expand_grid(.sim = 1:100, core_id=1:12) %>%
-  group_by(scenario, comp, target_depth, .sim, core_id) %>%
-  sample_n(1, weight=weight) %>%
-  select(-weight) %>%
-  inner_join(validation_combined %>%
-               mutate(noise=1*grepl("noise_", train)) %>%
-  mutate(comp=ifelse(grepl("comp_", train), "bottom",
-                     ifelse(grepl("compAll_", train), "all", "none")) ) %>%
-               mutate(target_depth = ifelse(grepl("30", test), 30, 60)) %>%
-               mutate(core_id = as.numeric(str_split_i(location_id, "_", 2))))
-
-get_train_name = function(train_depths, comp) {
+get_train_name = function(train_depths, measurement_type) {
   train_depths = str_split(train_depths, "_")[[1]]
   train_depths_start = c(0, head(train_depths, -1))
   
-  if(comp == "all") {
+  if(measurement_type == "avg") {
     comps = rep(" averaged", length(train_depths))
-  } else if (comp == "none") {
+  } else if (measurement_type == "ind") {
     comps = rep("", length(train_depths))
-  } else if (comp == "bottom") {
+  } else if (measurement_type == "comp") {
     comps = c(rep("", length(train_depths) - 1), " pooled")
   }
   sprintf("%s-%s cm%s", train_depths_start, train_depths, comps) %>%
@@ -135,7 +102,7 @@ get_train_name = function(train_depths, comp) {
 }
 
 summary_scenarios = validation_combined_scenario %>%
-  group_by(name, site, noise, comp, train_depths, target_depth, scenario, train, .sim) %>%
+  group_by(name, site, measurement_type, train_depths, target_depth, scenario, train, .sim) %>%
   summarize(error=mean(error_cumsum),
             truth=mean(SOCd_cumsum)) %>%
   ungroup(.sim) %>%
@@ -148,11 +115,11 @@ summary_scenarios = validation_combined_scenario %>%
     sd_rel = sd(error/truth),
     n=n()) %>%
   rowwise() %>%
-  mutate(train_name = get_train_name(train_depths, comp)) %>%
+  mutate(train_name = get_train_name(train_depths, measurement_type)) %>%
   ungroup
 
 design_names = tibble(
-  comp=c("none", "none", "none", "bottom", "none", "all"),
+  measurement_type=c("ind", "ind", "ind", "comp", "ind", "avg"),
   train_depths=c("30", "60", "30_35", "30_35", "30_60", "30_60"),
   design_name=c("Single layer", "Single layer", "Correction layer", "Correction layer pooled", "Multilayer", "Multilayer summary") %>% fct_inorder
 )
@@ -175,13 +142,10 @@ plot_performance = function(df, metrics, by) {
     left_join(design_names) %>%
     ggplot(aes(abs(value), 
                !!by_enquo,
-               #interaction(name, comp, noise, `Soil order`),
                group=`Soil order`, color=`Soil order`)) + 
     stat_summary(fun.data=ggdist::median_qi, fun.args = list(.width=1.0), position = position_dodge2(width = 0.33)) +
-    #geom_point(position = position_dodge2(width = 0.33)) +
     facet_wrap(~design_name + train_name, nrow=1, scales="free_x", strip.position="top") +
     geom_vline(xintercept=0, linetype="dashed") +
-    #facet_grid(test~metric, scales="free_x") +
     theme(legend.position="bottom") +
     ylab("Adjustment method") +
     theme(legend.position="bottom") +
@@ -191,20 +155,14 @@ plot_performance = function(df, metrics, by) {
 }
 ```
 
-```{r, fig.height=6}
+```{r}
 summary_scenarios_30 = summary_scenarios %>%
-  filter(target_depth == 30, 
-         ( (comp == "none") & (train_depths %in% c("30", "30_35"))) |
-          ( (comp == "bottom") & (train_depths == "30_35")) |
-           ( (train_depths == "30_60"))) %>%
-  filter(noise == 1)
+  filter(target_depth == 30) 
 
 summary_scenarios_60 = summary_scenarios %>%
-  filter(target_depth==60, 
-         train_depths %in% c("60", "30_60")) %>%
+  filter(target_depth==60) %>%
   arrange(desc(train_name)) %>%
-  mutate(train_name = fct_rev(train_name)) %>%
-  filter(noise == 1)
+  mutate(train_name = fct_rev(train_name))
 
 make_results_plot = function(p_30, p_60) {
   design = "
@@ -221,16 +179,16 @@ make_results_plot = function(p_30, p_60) {
 
 # systematic error, relative units
 
-```{r, fig.height=5}
+```{r fig_systematic_relative, fig.height=5, fig.width=8}
 p_30 = summary_scenarios_30 %>%
   filter(scenario %in% c("Compact", "Expand")) %>%
   rename(Systematic=bias_rel) %>%
-  plot_performance(c(Systematic), interaction(name))
+  plot_performance(Systematic, name)
 
 p_60 = summary_scenarios_60 %>%
   filter(scenario %in% c("Compact", "Expand")) %>%
   rename(Systematic=bias_rel) %>%
-  plot_performance(c(Systematic), interaction(name))
+  plot_performance(Systematic, name)
 
 make_results_plot(p_30, p_60) &
   scale_x_continuous(limits=c(0, .1), breaks=c(0,.03,.06,.09), labels=scales::percent) &
@@ -239,18 +197,18 @@ make_results_plot(p_30, p_60) &
 
 ## systematic error, absolute units
 
-```{r, fig.height=5}
+```{r fig_systematic_absolute, fig.height=5, fig.width=8}
 p_30 = summary_scenarios_30 %>%
   filter(scenario %in% c("Compact", "Expand")) %>%
   rename(Systematic=bias) %>%
   inner_join(soil_types %>% rename(site=Site)) %>%
-  plot_performance(c(Systematic), interaction(name))
+  plot_performance(c(Systematic), name)
   
 
 p_60 = summary_scenarios_60 %>%
   filter(scenario %in% c("Compact", "Expand")) %>%
   rename(Systematic=bias) %>% 
-  plot_performance(c(Systematic), interaction(name))
+  plot_performance(c(Systematic), name)
 
 make_results_plot(p_30, p_60) &
   scale_x_continuous(limits=c(0, 6)) &
@@ -260,16 +218,16 @@ make_results_plot(p_30, p_60) &
 
 ## Systematic error, relative units, expand only
 
-```{r, fig.height=5}
+```{r fig_systematic_relative_expand, fig.height=5, fig.width=8}
 p_30 = summary_scenarios_30 %>%
   filter(scenario %in% c("Expand")) %>%
   rename(Systematic=bias_rel) %>%
-  plot_performance(c(Systematic), interaction(name))
+  plot_performance(c(Systematic), name)
 
 p_60 = summary_scenarios_60 %>%
   filter(scenario %in% c("Expand")) %>%
   rename(Systematic=bias_rel) %>%
-  plot_performance(c(Systematic), interaction(name))
+  plot_performance(c(Systematic), name)
 
 make_results_plot(p_30, p_60) &
   scale_x_continuous(limits=c(0, .1), breaks=c(0,.03,.06,.09), labels=scales::percent) &
@@ -278,16 +236,16 @@ make_results_plot(p_30, p_60) &
 
 ## compact only
 
-```{r, fig.height=5}
+```{r fig_systematic_relative_compact, fig.height=5, fig.width=8}
 p_30 = summary_scenarios_30 %>%
   filter(scenario %in% c("Compact")) %>%
   rename(Systematic=bias_rel) %>%
-  plot_performance(c(Systematic), interaction(name))
+  plot_performance(c(Systematic), name)
 
 p_60 = summary_scenarios_60 %>%
   filter(scenario %in% c("Compact")) %>%
   rename(Systematic=bias_rel) %>%
-  plot_performance(c(Systematic), interaction(name))
+  plot_performance(c(Systematic), name)
 
 make_results_plot(p_30, p_60) &
   scale_x_continuous(limits=c(0, .1), breaks=c(0,.03,.06,.09), labels=scales::percent) &
@@ -296,18 +254,18 @@ make_results_plot(p_30, p_60) &
 
 ## Random error, relative units
 
-```{r, fig.height=5}
+```{r fig_random_relative, fig.height=5, fig.width=8}
 p_30 = summary_scenarios_30 %>%
   filter(scenario %in% c("Compact", "Expand")) %>%
   rename(Systematic=sd_rel) %>%
   inner_join(soil_types %>% rename(site=Site)) %>%
-  plot_performance(c(Systematic), interaction(name))
+  plot_performance(c(Systematic), name)
   
 
 p_60 = summary_scenarios_60 %>%
   filter(scenario %in% c("Compact", "Expand")) %>%
   rename(Systematic=sd_rel) %>% 
-  plot_performance(c(Systematic), interaction(name))
+  plot_performance(c(Systematic), name)
 
 make_results_plot(p_30, p_60) &
   scale_x_continuous(limits=c(0, 0.03), labels=scales::percent) &
@@ -317,18 +275,18 @@ make_results_plot(p_30, p_60) &
 
 ## More extreme, relative units
 
-```{r, fig.height=5}
+```{r fig_extreme_relative, fig.height=5, fig.width=8}
 p_30 = summary_scenarios_30 %>%
   filter(scenario %in% c("More Compact", "More Expand")) %>%
   rename(Systematic=bias_rel) %>%
   inner_join(soil_types %>% rename(site=Site)) %>%
-  plot_performance(c(Systematic), interaction(name))
+  plot_performance(c(Systematic), name)
   
 
 p_60 = summary_scenarios_60 %>%
   filter(scenario %in% c("More Compact", "More Expand")) %>%
   rename(Systematic=bias_rel) %>% 
-  plot_performance(c(Systematic), interaction(name))
+  plot_performance(c(Systematic), name)
 
 make_results_plot(p_30, p_60) &
   scale_x_continuous(n.breaks=4, limits=c(0, 0.20), labels=scales::percent) &
@@ -338,18 +296,18 @@ make_results_plot(p_30, p_60) &
 
 ## More extreme, absolute units
 
-```{r, fig.height=5}
+```{r fig_extreme_aboslute, fig.height=5, fig.width=8}
 p_30 = summary_scenarios_30 %>%
   filter(scenario %in% c("More Compact", "More Expand")) %>%
   rename(Systematic=bias) %>%
   inner_join(soil_types %>% rename(site=Site)) %>%
-  plot_performance(c(Systematic), interaction(name))
+  plot_performance(c(Systematic), name)
   
 
 p_60 = summary_scenarios_60 %>%
   filter(scenario %in% c("More Compact", "More Expand")) %>%
   rename(Systematic=bias) %>% 
-  plot_performance(c(Systematic), interaction(name))
+  plot_performance(c(Systematic), name)
 
 make_results_plot(p_30, p_60) &
   scale_x_continuous(limits=c(0, 12), n.breaks = 4) &
