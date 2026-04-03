@@ -1,16 +1,15 @@
 ---
-title: "Empirical Evaluation and Recommendations for Equivalent Soil Mass Adjustments"
+title: "Empirical evaluation and recommendations for equivalent soil mass adjustments"
 author: Eric Potash, Adam von Haden, Luke Bergschneider, Michael Douglass, Lenarth Ferrari, Rosa Lopez, Adriana Martinez, Andrew Margenot
 format: html
-editor: visual
 ---
 
 ```{r setup, include=FALSE}
 library(tidyverse)
 library(targets)
 library(patchwork)
-
 source("../R/esm_helper.R")
+
 knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
 theme_set(theme_bw())
 targets::tar_config_set(store = "../_targets")
@@ -24,12 +23,14 @@ soil_types = tibble(
   `Soil order` = c(rep("Alfisols", 3), rep("Mollisols", 3))
 )
 
+# load raw data
 raw_data = tar_read(measurements_resample) %>%
   add_ESM_columns() %>%
   mutate(Site = str_sub(location_id, 1, 4)) %>%
   inner_join(soil_types) %>%
-  mutate(SOCd3 = BD*SOCc)
+  mutate(SOCd3 = BD*SOCc) # SOC density
 
+# plot one row (soil type) of raw data 
 make_raw_data_plot = function(df) {
   df %>%
     filter(sample_depth_max > 0) %>%
@@ -41,18 +42,15 @@ make_raw_data_plot = function(df) {
     theme(axis.title = ggtext::element_markdown())
 }
 
-make_raw_data_plots = function(df, title=NULL) {
+# combine the two soil types and a title
+make_raw_data_plots = function(df, title) {
   raw_data_plots = df %>%
   nest_by(`Soil order`, .keep=TRUE) %>%
   mutate(plot = list(make_raw_data_plot(data)))
   
-  r = raw_data_plots$plot[[1]]
-  if(!is.null(title)) {
-    r = r + ggtitle(title)
-  }
-  r + raw_data_plots$plot[[2]] +
-    plot_layout(ncol=1,
-                axes="collect", axis_titles="collect")
+  raw_data_plots$plot[[1]] + ggtitle(title) +
+    raw_data_plots$plot[[2]] +
+    plot_layout(ncol=1, axes="collect", axis_titles="collect")
 }
 ```
 
@@ -86,6 +84,35 @@ raw_data_plot +
 ```{r}
 tar_load(validation_combined_scenario)
 
+summary_scenarios = validation_combined_scenario %>%
+  group_by(name, site, measurement_type, train_depths, target_depth, scenario, train, .sim) %>%
+  summarize(error=mean(error_cumsum),
+            truth=mean(SOCd_cumsum)) %>%
+  ungroup(.sim) %>%
+  summarize(
+    pred_mean=mean(error) + mean(truth),
+    truth=mean(truth),
+    bias=mean(error),
+    sd=sd(error),
+    bias_rel=mean(error/truth),
+    sd_rel = sd(error/truth),
+    n=n()) %>%
+    ungroup
+```
+
+# Results: 0-30 cm initial
+
+```{r}
+# names of measurement designs used in facet strips, e.g. "Multilayer summary"
+design_names = tibble(
+  measurement_type=c("ind", "ind", "ind", "comp", "ind", "avg"),
+  train_depths=c("30", "60", "30_35", "30_35", "30_60", "30_60"),
+  design_name=c("Single layer", "Single layer", "Correction layer", 
+                "Correction layer pooled", "Multilayer", "Multilayer summary") %>%
+    fct_inorder
+)
+
+#
 get_train_name = function(train_depths, measurement_type) {
   train_depths = str_split(train_depths, "_")[[1]]
   train_depths_start = c(0, head(train_depths, -1))
@@ -101,50 +128,28 @@ get_train_name = function(train_depths, measurement_type) {
     paste(collapse="\n")
 }
 
-summary_scenarios = validation_combined_scenario %>%
-  group_by(name, site, measurement_type, train_depths, target_depth, scenario, train, .sim) %>%
-  summarize(error=mean(error_cumsum),
-            truth=mean(SOCd_cumsum)) %>%
-  ungroup(.sim) %>%
-  summarize(
-    pred_mean=mean(error) + mean(truth),
-    truth=mean(truth),
-    bias=mean(error),
-    sd=sd(error),
-    bias_rel=mean(error/truth),
-    sd_rel = sd(error/truth),
-    n=n()) %>%
-  rowwise() %>%
-  mutate(train_name = get_train_name(train_depths, measurement_type)) %>%
-  ungroup
-
-design_names = tibble(
-  measurement_type=c("ind", "ind", "ind", "comp", "ind", "avg"),
-  train_depths=c("30", "60", "30_35", "30_35", "30_60", "30_60"),
-  design_name=c("Single layer", "Single layer", "Correction layer", "Correction layer pooled", "Multilayer", "Multilayer summary") %>% fct_inorder
-)
-```
-
-# Results: 0-30 cm initial
-
-```{r}
-plot_performance = function(df, metrics, by) {
-  metrics_enquo = rlang::enquo(metrics)
+# plot a single row (initial sampling depth) of the results
+plot_performance = function(df, metric, by) {
+  metric_enquo = rlang::enquo(metric)
   by_enquo = rlang::enquo(by)
   df %>%
     ungroup %>%
     mutate(name = recode_factor(
       name, fixed="Fixed",linear2="Linear",
       hyman="Spline", .ordered=TRUE)) %>%
-    pivot_longer(!!metrics_enquo, names_to="metric") %>%
-    mutate(metric=fct_inorder(metric)) %>%
+    mutate(value = abs(get(metric))) %>%
     left_join(soil_types %>% mutate(site=Site)) %>%
+    rowwise() %>%
+    mutate(train_name = get_train_name(train_depths, measurement_type)) %>%
+    ungroup %>%
     left_join(design_names) %>%
-    ggplot(aes(abs(value), 
+    ggplot(aes(value, 
                !!by_enquo,
                group=`Soil order`, color=`Soil order`)) + 
-    stat_summary(fun.data=ggdist::median_qi, fun.args = list(.width=1.0), position = position_dodge2(width = 0.33)) +
-    facet_wrap(~design_name + train_name, nrow=1, scales="free_x", strip.position="top") +
+    stat_summary(fun.data=ggdist::median_qi, fun.args = list(.width=1.0), 
+                 position = position_dodge2(width = 0.33)) +
+    facet_wrap(~design_name + train_name, nrow=1, 
+               scales="free_x", strip.position="top") +
     geom_vline(xintercept=0, linetype="dashed") +
     theme(legend.position="bottom") +
     ylab("Adjustment method") +
@@ -156,15 +161,12 @@ plot_performance = function(df, metrics, by) {
 ```
 
 ```{r}
-summary_scenarios_30 = summary_scenarios %>%
-  filter(target_depth == 30) 
-
-summary_scenarios_60 = summary_scenarios %>%
-  filter(target_depth==60) %>%
-  arrange(desc(train_name)) %>%
-  mutate(train_name = fct_rev(train_name))
-
-make_results_plot = function(p_30, p_60) {
+# combine the two plots (30 cm and 60 cm initial depths)
+make_results_plot = function(data, metric) {
+  
+  p_30 = plot_performance(data %>% filter(target_depth==30), metric, name)
+  p_60 = plot_performance(data %>% filter(target_depth==60), metric, name)
+  
   design = "
   AAAAA
   BBBCC
@@ -180,37 +182,20 @@ make_results_plot = function(p_30, p_60) {
 # systematic error, relative units
 
 ```{r fig_systematic_relative, fig.height=5, fig.width=8}
-p_30 = summary_scenarios_30 %>%
+summary_scenarios %>%
   filter(scenario %in% c("Compact", "Expand")) %>%
-  rename(Systematic=bias_rel) %>%
-  plot_performance(Systematic, name)
-
-p_60 = summary_scenarios_60 %>%
-  filter(scenario %in% c("Compact", "Expand")) %>%
-  rename(Systematic=bias_rel) %>%
-  plot_performance(Systematic, name)
-
-make_results_plot(p_30, p_60) &
-  scale_x_continuous(limits=c(0, .1), breaks=c(0,.03,.06,.09), labels=scales::percent) &
+  make_results_plot("bias_rel") &
+  scale_x_continuous(limits=c(0, .1), breaks=c(0,.03,.06,.09), 
+                     labels=scales::percent) &
   xlab("Systematic error (%)")
 ```
 
 ## systematic error, absolute units
 
 ```{r fig_systematic_absolute, fig.height=5, fig.width=8}
-p_30 = summary_scenarios_30 %>%
+summary_scenarios %>%
   filter(scenario %in% c("Compact", "Expand")) %>%
-  rename(Systematic=bias) %>%
-  inner_join(soil_types %>% rename(site=Site)) %>%
-  plot_performance(c(Systematic), name)
-  
-
-p_60 = summary_scenarios_60 %>%
-  filter(scenario %in% c("Compact", "Expand")) %>%
-  rename(Systematic=bias) %>% 
-  plot_performance(c(Systematic), name)
-
-make_results_plot(p_30, p_60) &
+  make_results_plot("bias") &
   scale_x_continuous(limits=c(0, 6)) &
   xlab("Systematic error (Mg ha<sup>-1</sup>)") &
   theme(axis.title = ggtext::element_markdown())
@@ -219,17 +204,9 @@ make_results_plot(p_30, p_60) &
 ## Systematic error, relative units, expand only
 
 ```{r fig_systematic_relative_expand, fig.height=5, fig.width=8}
-p_30 = summary_scenarios_30 %>%
+summary_scenarios %>%
   filter(scenario %in% c("Expand")) %>%
-  rename(Systematic=bias_rel) %>%
-  plot_performance(c(Systematic), name)
-
-p_60 = summary_scenarios_60 %>%
-  filter(scenario %in% c("Expand")) %>%
-  rename(Systematic=bias_rel) %>%
-  plot_performance(c(Systematic), name)
-
-make_results_plot(p_30, p_60) &
+  make_results_plot("bias_rel") &
   scale_x_continuous(limits=c(0, .1), breaks=c(0,.03,.06,.09), labels=scales::percent) &
   xlab("Systematic error (%)")
 ```
@@ -237,17 +214,9 @@ make_results_plot(p_30, p_60) &
 ## compact only
 
 ```{r fig_systematic_relative_compact, fig.height=5, fig.width=8}
-p_30 = summary_scenarios_30 %>%
+summary_scenarios %>%
   filter(scenario %in% c("Compact")) %>%
-  rename(Systematic=bias_rel) %>%
-  plot_performance(c(Systematic), name)
-
-p_60 = summary_scenarios_60 %>%
-  filter(scenario %in% c("Compact")) %>%
-  rename(Systematic=bias_rel) %>%
-  plot_performance(c(Systematic), name)
-
-make_results_plot(p_30, p_60) &
+  make_results_plot("bias_rel") &
   scale_x_continuous(limits=c(0, .1), breaks=c(0,.03,.06,.09), labels=scales::percent) &
   xlab("Systematic error (%)")
 ```
@@ -255,19 +224,9 @@ make_results_plot(p_30, p_60) &
 ## Random error, relative units
 
 ```{r fig_random_relative, fig.height=5, fig.width=8}
-p_30 = summary_scenarios_30 %>%
+summary_scenarios %>%
   filter(scenario %in% c("Compact", "Expand")) %>%
-  rename(Systematic=sd_rel) %>%
-  inner_join(soil_types %>% rename(site=Site)) %>%
-  plot_performance(c(Systematic), name)
-  
-
-p_60 = summary_scenarios_60 %>%
-  filter(scenario %in% c("Compact", "Expand")) %>%
-  rename(Systematic=sd_rel) %>% 
-  plot_performance(c(Systematic), name)
-
-make_results_plot(p_30, p_60) &
+  make_results_plot("sd_rel") &
   scale_x_continuous(limits=c(0, 0.03), labels=scales::percent) &
   xlab("Random error (%)") &
   theme(axis.title = ggtext::element_markdown())
@@ -276,19 +235,9 @@ make_results_plot(p_30, p_60) &
 ## More extreme, relative units
 
 ```{r fig_extreme_relative, fig.height=5, fig.width=8}
-p_30 = summary_scenarios_30 %>%
+summary_scenarios %>%
   filter(scenario %in% c("More Compact", "More Expand")) %>%
-  rename(Systematic=bias_rel) %>%
-  inner_join(soil_types %>% rename(site=Site)) %>%
-  plot_performance(c(Systematic), name)
-  
-
-p_60 = summary_scenarios_60 %>%
-  filter(scenario %in% c("More Compact", "More Expand")) %>%
-  rename(Systematic=bias_rel) %>% 
-  plot_performance(c(Systematic), name)
-
-make_results_plot(p_30, p_60) &
+  make_results_plot("bias_rel") &
   scale_x_continuous(n.breaks=4, limits=c(0, 0.20), labels=scales::percent) &
   xlab("Systematic error (%)") &
   theme(axis.title = ggtext::element_markdown())
@@ -297,19 +246,9 @@ make_results_plot(p_30, p_60) &
 ## More extreme, absolute units
 
 ```{r fig_extreme_aboslute, fig.height=5, fig.width=8}
-p_30 = summary_scenarios_30 %>%
+summary_scenarios %>%
   filter(scenario %in% c("More Compact", "More Expand")) %>%
-  rename(Systematic=bias) %>%
-  inner_join(soil_types %>% rename(site=Site)) %>%
-  plot_performance(c(Systematic), name)
-  
-
-p_60 = summary_scenarios_60 %>%
-  filter(scenario %in% c("More Compact", "More Expand")) %>%
-  rename(Systematic=bias) %>% 
-  plot_performance(c(Systematic), name)
-
-make_results_plot(p_30, p_60) &
+  make_results_plot("bias") &
   scale_x_continuous(limits=c(0, 12), n.breaks = 4) &
   xlab("Systematic error (Mg ha<sup>-1</sup>") &
   theme(axis.title = ggtext::element_markdown())
